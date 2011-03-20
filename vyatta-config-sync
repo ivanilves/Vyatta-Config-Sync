@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Vyatta (VC5/VC6/VC7) config.boot synchronizer, version 0.1-10
+# Vyatta (VC5/VC6/VC7) config.boot synchronizer, version 0.1-11
 #
 CONFIG_BOOT_FILE="/opt/vyatta/etc/config/config.boot"
 CONFIG_DIR="/etc/vyatta-config-sync"
@@ -147,8 +147,8 @@ while [ ${CL} -le ${LC} ]; do
   # Do something only if files differ
   if [ ${OLD_SLAVE_CONFIG_BOOT_MD5SUM} != ${NEW_SLAVE_CONFIG_BOOT_MD5SUM} ]; then
     # Validate new [generated] config.boot, if validator installed
-    if [ -x "/usr/sbin/vyatta-config-validator" ]; then
-      /usr/sbin/vyatta-config-validator "${TMP_CONFIG_BOOT_FILE}"
+    if [ -x "/usr/sbin/vyatta-config-validator.pl" ]; then
+      /usr/sbin/vyatta-config-validator.pl "${TMP_CONFIG_BOOT_FILE}"
       if [ ${?} -ne 0 ]; then
         suicide "Config validation failed for host: ${SYNC_HOST_NAME}"
       fi
