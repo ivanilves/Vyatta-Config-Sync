@@ -1,0 +1,188 @@
+#!/bin/bash
+#
+# Vyatta (VC5/VC6/VC7) config.boot synchronizer, version 0.1-10
+#
+CONFIG_BOOT_FILE="/opt/vyatta/etc/config/config.boot"
+CONFIG_DIR="/etc/vyatta-config-sync"
+OPTIONS_ENV_FILE="${CONFIG_DIR}/options.env"
+SYNC_HOSTS_FILE="${CONFIG_DIR}/sync_hosts.conf"
+SERIAL_FILE="${CONFIG_DIR}/serial"
+LOCAL_TRANSFORMATIONS_FILE="${CONFIG_DIR}/local_transformations.sed"
+TMP_DIR="/tmp/vyatta-config-sync.${RANDOM}"
+TMP_CONFIG_BOOT_FILE="${TMP_DIR}/config.boot"
+TMP_LOCAL_TRANSFORMATIONS_FILE="${TMP_DIR}/local_transformations.sed"
+
+
+# If your life suxx you have only one choise :)
+function suicide() {
+  echo
+  echo "[ ERROR ]"
+  echo -e "${@}"
+  echo
+  if [ -d "${TMP_DIR}" ]; then
+    rm -R "${TMP_DIR}"
+  fi
+  exit 1
+}
+
+# Load specified file content without comments, blank lines and leading/trailing whitespaces.
+# Non-leading/trailing tabs are converted to spaces.
+function load_config_file() {
+  CONFIG_FILE="${1}"
+  grep -v "^#" "${CONFIG_FILE}" | grep . | sed 's/^[ \t]*//;s/[ \t]*$//;s/\t/ /g'
+}
+
+function separator() {
+  echo "--------------------------------------------------------------------------------"
+}
+
+
+#
+# Basic validations & definitions
+#
+# You should run this program ONLY as regular user. Really.
+if [ ${UID} -lt 1000 ]; then
+  suicide "Only unprivileged users may run vyatta-config-sync!!!"
+fi
+# Checkout master config.boot and load master mac addresses
+test -r "${CONFIG_BOOT_FILE}" || suicide "Config file not readable: ${CONFIG_BOOT_FILE}"
+MASTER_MACS=$(grep hw-id "${CONFIG_BOOT_FILE}" | awk '{print $NF}')
+# Checkout environment config
+test -r "${OPTIONS_ENV_FILE}" || suicide "Config file not readable: ${OPTIONS_ENV_FILE}"
+source "${OPTIONS_ENV_FILE}"
+test -n "${enable_master_mode}" || enable_master_mode=0
+test -n "${distribute_sync_hosts}" || distribute_sync_hosts=0
+test -n "${backup_slave_config_boot}" || backup_slave_config_boot=1
+# Checkout sync_hosts.conf - the list of slave hosts to sync
+test -r "${SYNC_HOSTS_FILE}" || suicide "Config file not readable: ${SYNC_HOSTS_FILE}"
+SYNC_HOSTS=$(load_config_file "${SYNC_HOSTS_FILE}" | egrep -v " ${HOSTNAME}$")
+# Checkout file holding serial number of synchronization
+test -r "${SERIAL_FILE}" || suicide "Serial file not readable: ${SERIAL_FILE}"
+MASTER_SERIAL=$(cat "${SERIAL_FILE}" | head -n1)
+let NEW_SERIAL=MASTER_SERIAL+1
+# Slave hosts should NOT launch vyatta-config-sync
+if [ ${enable_master_mode} != "1" ]; then
+  suicide "Master mode not enabled!"
+fi
+
+# Validate command line params
+if [ ${#} -lt 1 ]; then
+  suicide "Usage: vyatta-config-sync load|noload|reboot [SYNC_HOST_NAME1 SYNC_HOST_NAME2 ... SYNC_HOST_NAMEn]"
+fi
+SYNC_MODE=${1}
+shift
+# Check if sync hosts specified in command line exist in configuration file
+if [ ${#} -gt 0 ]; then
+  CUSTOM_SYNC_HOSTS=""
+  for CUSTOM_SYNC_HOST_NAME in ${@}; do
+    CUSTOM_SYNC_HOST_LINE=$(echo "${SYNC_HOSTS}" | egrep " ${CUSTOM_SYNC_HOST_NAME}$" 2>/dev/null)
+    if [ ${#CUSTOM_SYNC_HOST_LINE} -gt 0 ]; then
+      CUSTOM_SYNC_HOSTS="${CUSTOM_SYNC_HOSTS}\n${CUSTOM_SYNC_HOST_LINE}"
+    else
+      suicide "Sync host not specified in configuration file: ${SYNC_HOST}"
+    fi
+  done
+  SYNC_HOSTS=$(echo -e "${CUSTOM_SYNC_HOSTS}" | grep .)
+fi
+# Check if specified sync mode is valid
+case ${SYNC_MODE} in
+  'load')POST_SYNC_COMMAND="/usr/sbin/vyatta-load-config";;
+  'noload')POST_SYNC_COMMAND="/bin/true";;
+  'reboot')POST_SYNC_COMMAND="sudo /sbin/reboot";;
+  *)suicide "Unknown synchronization mode: ${SYNC_MODE}";;
+esac
+
+# Create temporary working directory
+mkdir "${TMP_DIR}"
+chmod 0770 "${TMP_DIR}"
+chgrp vyattacfg "${TMP_DIR}"
+
+#
+# Synchronize every slave host
+#
+# Write new serial on master
+echo "${NEW_SERIAL}" > "${SERIAL_FILE}"
+CL=1
+LC=$(echo "${SYNC_HOSTS}" | wc -l)
+MC=$(echo "${MASTER_MACS}" | wc -l)
+while [ ${CL} -le ${LC} ]; do
+  SYNC_HOST_LINE=$(echo "${SYNC_HOSTS}" | head -n${CL} | tail -n1)
+  SYNC_HOST_ADDR=$(echo "${SYNC_HOST_LINE}" | awk '{print $1}')
+  SYNC_HOST_NAME=$(echo "${SYNC_HOST_LINE}" | awk '{print $2}')
+  separator
+  echo "* ${SYNC_HOST_NAME}"
+  separator
+
+  ### Step 0: Checkout slave serial
+  SLAVE_SERIAL="$(ssh ${SYNC_HOST_ADDR} "cat ${SERIAL_FILE}" 2>/dev/null | head -n1)"
+  if [ ${SLAVE_SERIAL} -gt ${MASTER_SERIAL} ]; then
+    suicide "Slave serial(${SLAVE_SERIAL}) is greater than master serial(${MASTER_SERIAL}) on host: ${SYNC_HOST_NAME}"
+  fi
+
+  ### Step 1: Apply transformations to config.boot and transfer it to slave
+  scp ${SYNC_HOST_ADDR}:"${LOCAL_TRANSFORMATIONS_FILE}" "${TMP_LOCAL_TRANSFORMATIONS_FILE}" >/dev/null 2>&1
+  chmod 0660 "${TMP_LOCAL_TRANSFORMATIONS_FILE}"
+  chgrp vyattacfg "${TMP_LOCAL_TRANSFORMATIONS_FILE}"
+  SLAVE_MACS=$(ssh ${SYNC_HOST_ADDR} "grep hw-id ${CONFIG_BOOT_FILE}" 2>/dev/null | awk '{print $NF}')
+  SC=$(echo "${SLAVE_MACS}" | wc -l)
+  # Slave MUST have the same number of MAC addresses(ethernet interfaces) as master, or ELSE! (what?)
+  if [ ${SC} -ne ${MC} ]; then
+    suicide "Slave MAC address number(${SC}) is different from master MAC address number(${MC}) on host: ${SYNC_HOST_NAME}"
+  fi
+  # Add MAC address substitution rule to slave local transformations
+  CM=1
+  while [ ${CM} -le ${MC} ]; do
+    MASTER_MAC=$(echo "${MASTER_MACS}" | head -n${CM} | tail -n1)
+    SLAVE_MAC=$(echo "${SLAVE_MACS}" | head -n${CM} | tail -n1)
+    echo "s/${MASTER_MAC}/${SLAVE_MAC}/" >> "${TMP_LOCAL_TRANSFORMATIONS_FILE}"
+    let CM++
+  done
+  # Generate slave config.boot by applying local transformations and host substitution to master config.boot
+  sed -f "${TMP_LOCAL_TRANSFORMATIONS_FILE}" -e "s/host-name .*[^{]$/host-name ${SYNC_HOST_NAME}/" "${CONFIG_BOOT_FILE}" > "${TMP_CONFIG_BOOT_FILE}"
+  chmod 0660 "${TMP_CONFIG_BOOT_FILE}"
+  chgrp vyattacfg "${TMP_CONFIG_BOOT_FILE}"
+  # Compare MD5 sums of existing and newly generated slave config.boot files
+  OLD_SLAVE_CONFIG_BOOT_MD5SUM=$(ssh ${SYNC_HOST_ADDR} "md5sum ${CONFIG_BOOT_FILE}" 2>/dev/null | awk '{print $1}')
+  NEW_SLAVE_CONFIG_BOOT_MD5SUM=$(md5sum "${TMP_CONFIG_BOOT_FILE}" 2>/dev/null | awk '{print $1}')
+  # Do something only if files differ
+  if [ ${OLD_SLAVE_CONFIG_BOOT_MD5SUM} != ${NEW_SLAVE_CONFIG_BOOT_MD5SUM} ]; then
+    # Validate new [generated] config.boot, if validator installed
+    if [ -x "/usr/sbin/vyatta-config-validator" ]; then
+      /usr/sbin/vyatta-config-validator "${TMP_CONFIG_BOOT_FILE}"
+      if [ ${?} -ne 0 ]; then
+        suicide "Config validation failed for host: ${SYNC_HOST_NAME}"
+      fi
+    fi
+    # Backup old slave config.boot if needed
+    if [ ${backup_slave_config_boot} == "1" ]; then
+      ssh ${SYNC_HOST_ADDR} "sudo cp -p ${CONFIG_BOOT_FILE} ${CONFIG_BOOT_FILE}.vyatta-config-sync.${SLAVE_SERIAL}" >/dev/null 2>&1
+    fi
+    # Transfer new config.boot to slave
+    rsync -aH -essh "${TMP_CONFIG_BOOT_FILE}" ${SYNC_HOST_ADDR}:"${CONFIG_BOOT_FILE}" >/dev/null 2>&1
+    ssh ${SYNC_HOST_ADDR} "sudo chown root:vyattacfg ${CONFIG_BOOT_FILE}" >/dev/null 2>&1
+  else
+    let CL++
+    echo "[ SKIP ]"
+    separator; echo
+    continue
+  fi
+
+  ### Step 2(optional): Copy sync_hosts.conf to slave
+  if [ ${distribute_sync_hosts} == "1" ]; then
+    rsync -aH -essh "${SYNC_HOSTS_FILE}" ${SYNC_HOST_ADDR}:"${SYNC_HOSTS_FILE}" >/dev/null 2>&1
+  fi
+
+  ### Step 3: Set slave serial & fix slave config file permissions
+  rsync -aH -essh "${SERIAL_FILE}" ${SYNC_HOST_ADDR}:"${SERIAL_FILE}" >/dev/null 2>&1
+  ssh ${SYNC_HOST_ADDR} "sudo chown root:vyattacfg ${CONFIG_DIR}/*" >/dev/null 2>&1
+
+  ### Step 4: Execute post-sync command
+  ssh -o "SendEnv *" ${SYNC_HOST_ADDR} "${POST_SYNC_COMMAND}" >/dev/null 2>&1
+
+  let CL++
+  echo "[ OK ]"
+  separator; echo
+done
+
+# Remove temporary working directory
+rm -R "${TMP_DIR}"

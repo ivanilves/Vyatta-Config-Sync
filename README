@@ -1,0 +1,3 @@
+vyatta-config-sync is a Vyatta configuration synchronizer destined
+to distribute Vyatta config.boot file from master server across slave servers
+while applying necessary local modifications on every slave host.
