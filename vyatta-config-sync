@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Vyatta (VC5/VC6/VC7) config.boot synchronizer, version 0.1-11
+# Vyatta (VC5/VC6/VC7) config.boot synchronizer, version 0.1-14
 #
 CONFIG_BOOT_FILE="/opt/vyatta/etc/config/config.boot"
 CONFIG_DIR="/etc/vyatta-config-sync"
@@ -11,6 +11,8 @@ LOCAL_TRANSFORMATIONS_FILE="${CONFIG_DIR}/local_transformations.sed"
 TMP_DIR="/tmp/vyatta-config-sync.${RANDOM}"
 TMP_CONFIG_BOOT_FILE="${TMP_DIR}/config.boot"
 TMP_LOCAL_TRANSFORMATIONS_FILE="${TMP_DIR}/local_transformations.sed"
+STDOUT_DST="/tmp/vyatta-config-sync.out"
+STDERR_DST="/tmp/vyatta-config-sync.err"
 
 
 # If your life suxx you have only one choise :)
@@ -44,6 +46,8 @@ function separator() {
 if [ ${UID} -lt 1000 ]; then
   suicide "Only unprivileged users may run vyatta-config-sync!!!"
 fi
+# Remove log files
+rm -f "${STDOUT_DST}" "${STDERR_DST}" 2>/dev/null
 # Checkout master config.boot and load master mac addresses
 test -r "${CONFIG_BOOT_FILE}" || suicide "Config file not readable: ${CONFIG_BOOT_FILE}"
 MASTER_MACS=$(grep hw-id "${CONFIG_BOOT_FILE}" | awk '{print $NF}')
@@ -120,7 +124,7 @@ while [ ${CL} -le ${LC} ]; do
   fi
 
   ### Step 1: Apply transformations to config.boot and transfer it to slave
-  scp ${SYNC_HOST_ADDR}:"${LOCAL_TRANSFORMATIONS_FILE}" "${TMP_LOCAL_TRANSFORMATIONS_FILE}" >/dev/null 2>&1
+  scp ${SYNC_HOST_ADDR}:"${LOCAL_TRANSFORMATIONS_FILE}" "${TMP_LOCAL_TRANSFORMATIONS_FILE}" >>"${STDOUT_DST}" 2>>"${STDERR_DST}"
   chmod 0660 "${TMP_LOCAL_TRANSFORMATIONS_FILE}"
   chgrp vyattacfg "${TMP_LOCAL_TRANSFORMATIONS_FILE}"
   SLAVE_MACS=$(ssh ${SYNC_HOST_ADDR} "grep hw-id ${CONFIG_BOOT_FILE}" 2>/dev/null | awk '{print $NF}')
@@ -158,8 +162,8 @@ while [ ${CL} -le ${LC} ]; do
       ssh ${SYNC_HOST_ADDR} "sudo cp -p ${CONFIG_BOOT_FILE} ${CONFIG_BOOT_FILE}.vyatta-config-sync.${SLAVE_SERIAL}" >/dev/null 2>&1
     fi
     # Transfer new config.boot to slave
-    rsync -aH -essh "${TMP_CONFIG_BOOT_FILE}" ${SYNC_HOST_ADDR}:"${CONFIG_BOOT_FILE}" >/dev/null 2>&1
-    ssh ${SYNC_HOST_ADDR} "sudo chown root:vyattacfg ${CONFIG_BOOT_FILE}" >/dev/null 2>&1
+    rsync -aH -essh "${TMP_CONFIG_BOOT_FILE}" ${SYNC_HOST_ADDR}:"${CONFIG_BOOT_FILE}" >>"${STDOUT_DST}" 2>>"${STDERR_DST}"
+    ssh ${SYNC_HOST_ADDR} "sudo chown root:vyattacfg ${CONFIG_BOOT_FILE}" >>"${STDOUT_DST}" 2>>"${STDERR_DST}"
   else
     let CL++
     echo "[ SKIP ]"
@@ -169,15 +173,15 @@ while [ ${CL} -le ${LC} ]; do
 
   ### Step 2(optional): Copy sync_hosts.conf to slave
   if [ ${distribute_sync_hosts} == "1" ]; then
-    rsync -aH -essh "${SYNC_HOSTS_FILE}" ${SYNC_HOST_ADDR}:"${SYNC_HOSTS_FILE}" >/dev/null 2>&1
+    rsync -aH -essh "${SYNC_HOSTS_FILE}" ${SYNC_HOST_ADDR}:"${SYNC_HOSTS_FILE}" >>"${STDOUT_DST}" 2>>"${STDERR_DST}"
   fi
 
   ### Step 3: Set slave serial & fix slave config file permissions
-  rsync -aH -essh "${SERIAL_FILE}" ${SYNC_HOST_ADDR}:"${SERIAL_FILE}" >/dev/null 2>&1
-  ssh ${SYNC_HOST_ADDR} "sudo chown root:vyattacfg ${CONFIG_DIR}/*" >/dev/null 2>&1
+  rsync -aH -essh "${SERIAL_FILE}" ${SYNC_HOST_ADDR}:"${SERIAL_FILE}" >>"${STDOUT_DST}" 2>>"${STDERR_DST}"
+  ssh ${SYNC_HOST_ADDR} "sudo chown root:vyattacfg ${CONFIG_DIR}/*" >>"${STDOUT_DST}" 2>>"${STDERR_DST}"
 
   ### Step 4: Execute post-sync command
-  ssh -o "SendEnv *" ${SYNC_HOST_ADDR} "${POST_SYNC_COMMAND}" >/dev/null 2>&1
+  ssh -o "SendEnv *" ${SYNC_HOST_ADDR} "${POST_SYNC_COMMAND}" >>"${STDOUT_DST}" 2>>"${STDERR_DST}"
 
   let CL++
   echo "[ OK ]"
