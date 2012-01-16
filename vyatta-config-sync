@@ -1,7 +1,8 @@
 #!/bin/bash
 #
-# Vyatta (VC5/VC6/VC7) config.boot synchronizer, version 0.1-14
+# Vyatta (VC5/VC6/VC7) config.boot synchronizer, version 0.1-15
 #
+source "/etc/default/vyatta" application=vyatta-config-sync
 CONFIG_BOOT_FILE="/opt/vyatta/etc/config/config.boot"
 CONFIG_DIR="/etc/vyatta-config-sync"
 OPTIONS_ENV_FILE="${CONFIG_DIR}/options.env"
