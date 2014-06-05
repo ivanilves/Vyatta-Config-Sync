@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Vyatta (VC5/VC6/VC7) config.boot synchronizer, version 0.1-16
+# Vyatta / VyOS config.boot synchronizer, version 0.1-17
 #
 source "/etc/default/vyatta" application=vyatta-config-sync
 CONFIG_BOOT_FILE="/opt/vyatta/etc/config/config.boot"
@@ -144,7 +144,7 @@ while [ ${CL} -le ${LC} ]; do
     let CM++
   done
   # Generate slave config.boot by applying local transformations and host substitution to master config.boot
-  sed -f "${TMP_LOCAL_TRANSFORMATIONS_FILE}" -e "s/host-name .*[^{]$/host-name ${SYNC_HOST_NAME}/" "${CONFIG_BOOT_FILE}" > "${TMP_CONFIG_BOOT_FILE}"
+  sed -f "${TMP_LOCAL_TRANSFORMATIONS_FILE}" -e "s/host-name ${HOSTNAME}$/host-name ${SYNC_HOST_NAME}/" "${CONFIG_BOOT_FILE}" > "${TMP_CONFIG_BOOT_FILE}"
   chmod 0660 "${TMP_CONFIG_BOOT_FILE}"
   chgrp vyattacfg "${TMP_CONFIG_BOOT_FILE}"
   # Compare MD5 sums of existing and newly generated slave config.boot files
