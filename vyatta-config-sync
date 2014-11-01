@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Vyatta / VyOS config.boot synchronizer, version 0.1-18
+# Vyatta / VyOS config.boot synchronizer, version 0.1-19
 #
 umask 0002
 source "/etc/default/vyatta" application=vyatta-config-sync
